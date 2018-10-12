@@ -1,0 +1,3 @@
+[submodule "functions/national-rail-stations"]
+	path = functions/national-rail-stations
+	url = https://github.com/fasteroute/national-rail-stations.git
