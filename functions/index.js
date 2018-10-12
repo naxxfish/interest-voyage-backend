@@ -1,6 +1,11 @@
 const functions = require('firebase-functions')
 // The Firebase Admin SDK to access the Firebase Realtime Database.
 const admin = require('firebase-admin')
+const PubSub = require(`@google-cloud/pubsub`)
+const pubsubClient = new PubSub({
+  projectId: process.env.GOOGLE_CLOUD_PROJECT
+})
+
 admin.initializeApp(functions.config().firebase)
 var RealtimetrainsClient = require('realtimetrains')
 const stations = require('./national-rail-stations/stations')
@@ -18,6 +23,14 @@ function getISODate(date) {
           date.getMonth()+1,
           date.getDate()].join('/')
 }
+
+
+exports.stations = functions.https.onRequest((req, res) => {
+  if (req.method !== 'GET') {
+    return res.status(403).send('Can\'t' + req.method + ' this function')
+  }
+  return res.status(200).send(stations)
+})
 
 exports.subscribe = functions.https.onRequest((req, res) => {
    if (req.method !== 'PUT') {
@@ -129,24 +142,59 @@ exports.schedules = functions.https.onRequest((req, res) => {
   })
 })
 
-exports.stations = functions.https.onRequest((req, res) => {
-  if (req.method !== 'GET') {
-    return res.status(403).send('Can\'t' + req.method + ' this function')
-  }
-  return res.status(200).send(stations)
-})
 
-exports.pollSchedules = functions.pubsub.topic('pollSchedules').onPublish((message) => {
+exports.triggerScheduleUpdates = functions.pubsub.topic('pollSchedules').onPublish((message) => {
   // this message content is irrelevant - a message is generated every minute to trigger this function
-  db.collection('system').doc('subscriptionsDocument').then((doc) => {
+  return db.collection('system').doc('subscriptionDocument').get().then((doc) => {
     if (!doc.exists) {
       console.log("Document doesn't exist!")
     } else {
       console.log("Got list of subscriptions", doc.data())
+      var subscriptions = doc.data().subscriptions
+      console.log('subscriptions', subscriptions)
+      subscriptions.forEach((trainUID) => {
+        console.log('trainUID', trainUID)
+        pubsubClient
+        .topic('scheduleUpdate')
+        .publisher()
+        .publish(Buffer.from(JSON.stringify({'trainUID': trainUID, 'trainDate': getISODate(new Date())})))
+        .then(messageId => {
+          console.log(`Queued ${trainUID} to be polled (${messageId} published)`)
+          return null
+        })
+        .catch(err => {
+          console.error('ERROR:', err)
+          return null
+        })
+      })
     }
-    return
+    return null
   }).catch(err => {
-      console.log('Error getting document', err)
+      console.log('Error getting Subscriptions document', err)
+      return null
+  });
+});
+
+exports.scheduleUpdate = functions.pubsub.topic('scheduleUpdate').onPublish((message) => {
+  let trainUID = null, trainDate = null;
+  try {
+    trainUID = message.json.trainUID
+    trainDate = message.json.trainDate
+  } catch (e) {
+    console.error('PubSub message was not JSON', e);
+  }
+  const SERVICE_SELECTOR = trainUID
+  console.log('trainUID:', trainUID, 'trainDate', trainDate)
+  return db.collection('schedules').doc(SERVICE_SELECTOR).get().then((doc) => {
+    return rttClient.getService({
+      'service':trainUID,
+      'date':trainDate
+    }).then(serviceResp => {
+      var service = serviceResp.data
+      return db.collection('schedules').doc(SERVICE_SELECTOR).set(service)
+    })
+  }).catch(err => {
+      console.log('Error getting Schedule document', err)
       return
-    });
+  });
 });
