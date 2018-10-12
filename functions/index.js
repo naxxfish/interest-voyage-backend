@@ -13,6 +13,12 @@ var rttClient = new RealtimetrainsClient({
   'password': functions.config().rtt.password
 })
 
+function getISODate(date) {
+  return [date.getFullYear(),
+          date.getMonth()+1,
+          date.getDate()].join('/')
+}
+
 exports.subscribe = functions.https.onRequest((req, res) => {
    if (req.method !== 'PUT') {
      return res.status(403).send('Cannot ' + req.method + ' this function')
@@ -26,7 +32,7 @@ exports.subscribe = functions.https.onRequest((req, res) => {
    }
    console.log("Subscribing to train ", trainUID)
    var subscriptionsDocRef = db.collection('system').doc('subscriptionDocument')
-   subscriptionsDocRef.update({
+   return subscriptionsDocRef.update({
      "subscriptions": admin.firestore.FieldValue.arrayUnion(trainUID)
    }).then((fbRes => {
      console.log("Added subscription to " + trainUID)
@@ -49,23 +55,78 @@ exports.schedules = functions.https.onRequest((req, res) => {
     station: startStation,
     toStation: endStation,
   }
+  var crsRegex = /^[A-Z]{3}$/
+  var dateRegex = /^\d{4}-\d{2}-\d{2}$/
+  var timeRegex = /^\d{4}$/
+  if ( (! startStation.match(crsRegex)) || (! endStation.match(crsRegex)) ) {
+    return res.status(500).send('Invalid request')
+  }
 
   if (journeyTime) {
-    locationListQuery.time = journeyTime
+    if (journeyTime.match(timeRegex))
+    {
+      locationListQuery.time = journeyTime
+    } else {
+      return res.status(500).send('invalid time format')
+    }
   }
 
   if (journeyDate) {
-    locationListQuery.date = journeyDate
+    if (journeyDate.match(dateRegex))
+    {
+      locationListQuery.date = journeyDate
+    } else {
+      return res.status(500).send('invalid date format')
+    }
+  } else {
+    locationListQuery.date = getISODate(new Date())
   }
+
   console.log("Querying with ", locationListQuery)
   rttClient.getLocationList(locationListQuery).then((locationList) => {
+    if (!locationList.data.services)
+    {
+      console.error("Didn't see the list of servicers in RealTimeTrain API response", locationList.data)
+      return res.status(500).send("Incomplete response")
+    }
     console.log("Got schedules response", locationList.data)
-    return res.status(200).send(locationList.data)
+    var services = locationList.data.services
+    var servicesList = []
+    services.forEach((service) => {
+      var origins = service.locationDetail.origin
+      var originTexts = []
+      origins.forEach((origin) => {
+        originTexts.push(origin.description)
+      })
+      var originText = originTexts.join(' / ')
+
+      var destinations = service.locationDetail.destination
+      var destinationTexts = []
+      destinations.forEach((destination) => {
+        destinationTexts.push(destination.description)
+      })
+      var destinationText = destinationTexts.join(' / ')
+
+      var serviceLine = {
+        'origin': originText,
+        'timetableTime': service.locationDetail.gbttBookedDeparture,
+        'timetableDate': service.runDate,
+        'destination': destinationText,
+        'trainUID': service.serviceUid,
+        'toc': service.atocName,
+        'tocCode': service.atocCode
+      }
+      if (service.isPassenger)
+      {
+        servicesList.push(serviceLine)
+      }
+    })
+    console.log(servicesList)
+    return res.status(200).send(servicesList)
   }).catch((error) => {
     console.error(error)
     return res.status(500).send("Error querying schedules! ", error)
   })
-  return
 })
 
 exports.stations = functions.https.onRequest((req, res) => {
