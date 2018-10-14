@@ -56,8 +56,9 @@ function validateTrainDate(trainDate, mandatory = false) {
     }
     if (! trainDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
       reject(new Error('invalid date format'))
+    } else {
+      resolve()
     }
-    resolve()
   })
 }
 
@@ -74,6 +75,8 @@ function validateTrainTime(trainTime, mandatory = false) {
       }
       if (! trainTime.match(/^\d{4}$/)) {
         reject(new Error('invalid time format'))
+      } else {
+        resolve()
       }
     })
 }
@@ -85,8 +88,9 @@ function validateTrainUID(trainUID) {
     }
     if (! trainUID.match(/^[A-Z]\d{5}$/)) {
       return reject(new Error('invalid train uid'))
+    } else {
+      return resolve()
     }
-    return resolve()
   })
 }
 
@@ -98,8 +102,9 @@ function validateCRS(crs) {
     }
     if (! crs.match(/^[A-Z]{3}$/)) {
       return reject(new Error('invalid crs'))
+    } else {
+      return resolve()
     }
-    return resolve()
   })
 }
 
@@ -220,7 +225,7 @@ exports.schedules = functions.https.onRequest((req, res) => {
       }
       if (!(journeyTime === undefined || journeyTime === '')) {
         // if a time is specified, then include it in the query
-          locationListQuery.time = journeyTime
+        locationListQuery.time = journeyTime
       }
       if (journeyDate === undefined || journeyDate === '') {
         // if date is not specified, assume today
@@ -253,7 +258,9 @@ exports.schedules = functions.https.onRequest((req, res) => {
             })
           }
         })
-        return res.status(200).send(servicesList)
+        return servicesList
+    }).then((servicesList) => {
+      res.status(200).send(servicesList)
     })
     .catch((error) => {
         console.error(error)
