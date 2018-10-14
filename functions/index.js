@@ -32,35 +32,83 @@ function getServiceSelector(trainUID, trainDate) {
 }
 
 function getDateFromTrainDate(trainDate) {
-  return moment(trainDate,'YYYY/MM/DD').format('YYYY-DD-MM').toDate()
+  return moment(trainDate,'YYYY/MM/DD').toDate()
 }
 
-function getFBTimestampFromTrainDate(dateObj) {
-  return admin.firestore.Timestamp.fromDate(getDateFromTrainDate(dateObj))
+function getFBTimestampFromTrainDate(trainDate) {
+  return admin.firestore.Timestamp.fromDate(getDateFromTrainDate(trainDate))
 }
 
-function validateTrainDate(trainDate) {
+function requestScheduleUpdate(trainScheduleQuery) {
+  return pubsubClient.topic('scheduleUpdate')
+    .publisher()
+    .publish(Buffer.from(JSON.stringify(trainScheduleQuery)))
+}
+
+function validateTrainDate(trainDate, mandatory = false) {
   return new Promise((resolve, reject) => {
-    if (trainDate === undefined || trainDate === '') {
-      reject(new Error('no train ID specified'))
+    if ((trainDate === undefined || trainDate === '') && mandatory) {
+      reject(new Error('date not specified'))
+    }
+    // if it's not been specified but it's optional, resolve
+    if ((trainDate === undefined || trainDate === '') && ! mandatory) {
+      resolve()
     }
     if (! trainDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
-      reject(new Error('Invalid train date'))
+      reject(new Error('invalid date format'))
     }
     resolve()
   })
+}
+
+function validateTrainTime(trainTime, mandatory = false) {
+    var timeRegex = /^\d{4}$/
+    return new Promise((resolve, reject) => {
+      // if it's not been specified, and it's mandatory, reject
+      if ((trainTime === undefined || trainTime === '') && mandatory) {
+        reject(new Error('train time not specified'))
+      }
+      // if it's not been specified but it's optional, resolve
+      if ((trainTime === undefined || trainTime === '') && ! mandatory) {
+        resolve()
+      }
+      if (! trainTime.match(/^\d{4}$/)) {
+        reject(new Error('invalid time format'))
+      }
+    })
 }
 
 function validateTrainUID(trainUID) {
   return new Promise((resolve, reject) => {
     if (trainUID === undefined || trainUID === '') {
-      reject(new Error('no train ID specified'))
+      return reject(new Error('train uid not specified'))
     }
     if (! trainUID.match(/^[A-Z]\d{5}$/)) {
-      reject(new Error('Invalid train ID'))
+      return reject(new Error('invalid train uid'))
     }
-    resolve()
+    return resolve()
   })
+}
+
+function validateCRS(crs) {
+  return new Promise((resolve, reject) => {
+    if (crs === undefined || crs === '')
+    {
+      reject(new Error('crs not specified'))
+    }
+    if (! crs.match(/^[A-Z]{3}$/)) {
+      return reject(new Error('invalid crs'))
+    }
+    return resolve()
+  })
+}
+
+function concatenateDescriptions(stationList) {
+  var stationTexts = []
+  stationList.forEach((origin) => {
+    stationTexts.push(origin.description)
+  })
+  return stationTexts.join(' / ')
 }
 
 exports.stations = functions.https.onRequest((req, res) => {
@@ -78,23 +126,26 @@ exports.subscribe = functions.https.onRequest((req, res) => {
    var trainDate = req.query['trainDate']
    return Promise.all([
      validateTrainUID(trainUID),
-     validateTrainDate(trainDate)
+     validateTrainDate(trainDate,true)
    ]).catch((error) => {
         return res.status(500).send(error)
    }).then(() => {
      var trainFBDate = getFBTimestampFromTrainDate(trainDate)
      console.log("Subscribing to train ", trainUID)
      const SERVICE_SELECTOR = getServiceSelector(trainUID,trainDate)
-     return db.collection('subscriptions').doc().set(
+     return db.collection('subscriptions').doc(SERVICE_SELECTOR).set(
        {
          trainUID,
          trainDate,
-         trainFBDate
+         trainFBDate,
+         errorCount: 0
        }
      )
    }).then(fbRes => {
      console.log("Added subscription to " + trainUID)
      return res.status(200).send('Subscribed to ' + trainUID)
+   }).then(() => {
+     return requestScheduleUpdate({'trainUID': trainUID, 'trainDate': trainDate })
    }).catch((error) => {
      return res.status(500).send("Couldn't subscribe: " + error)
    })
@@ -106,18 +157,22 @@ exports.journeyPlaylist = functions.https.onRequest((req, res) => {
   var trainDate = req.query['trainDate']
   Promise.all([
     validateTrainUID(trainUID),
-    validateTrainDate(trainDate)
-    ]).catch((error) => {
-       return res.status(500).send(error)
-   })
-  return rttClient.getService({
-    'service': trainUID,
-    'date': trainDate
+    validateTrainDate(trainDate,true)
+  ]).then(() => {
+    return rttClient.getService({
+      'service': trainUID,
+      'date': trainDate
+    })
   }).then((service) => {
     // loop through the calling points and see if what assets we have to each tiploc
+    if (service.data.error) {
+      console.error('rtt api error', service.data.error)
+      throw new Error("rtt api error: " + service.data.error)
+    }
     if (!(service.data && service.data.locations))
     {
-      return res.status(500).send("No locations")
+      console.error('no locations...',service.data)
+      throw new Error("train has no locations")
     }
     var assetPromises = []
     service.data.locations.map((location) => {
@@ -125,7 +180,7 @@ exports.journeyPlaylist = functions.https.onRequest((req, res) => {
     })
     return assetPromises
   })
-  .then( Promise.all(assetPromises) )
+  .then( (assetPromises) => { return Promise.all(assetPromises) } )
   .then((snapshots) => {
     var list = []
     snapshots.forEach((snapshot) => {
@@ -141,7 +196,7 @@ exports.journeyPlaylist = functions.https.onRequest((req, res) => {
     return res.status(200).send(list)
   })
   .catch((error) => {
-    return res.status(500).send('Could not retrieve service: ' + error)
+    return res.status(500).send({'error': error.message})
   })
 })
 
@@ -153,83 +208,56 @@ exports.schedules = functions.https.onRequest((req, res) => {
   var endStation = req.query['end']
   var journeyDate = req.query['date']
   var journeyTime = req.query['time']
-  var locationListQuery = {
-    station: startStation,
-    toStation: endStation,
-  }
-  var crsRegex = /^[A-Z]{3}$/
-  var dateRegex = /^\d{4}-\d{2}-\d{2}$/
-  var timeRegex = /^\d{4}$/
-  if ( (! startStation.match(crsRegex)) || (! endStation.match(crsRegex)) ) {
-    return res.status(500).send('Invalid request')
-  }
 
-  if (journeyTime) {
-    if (journeyTime.match(timeRegex))
-    {
-      locationListQuery.time = journeyTime
-    } else {
-      return res.status(500).send('invalid time format')
-    }
-  }
-
-  if (journeyDate) {
-    if (journeyDate.match(dateRegex))
-    {
-      locationListQuery.date = journeyDate
-    } else {
-      return res.status(500).send('invalid date format')
-    }
-  } else {
-    // if all else fails, assume we're talking about today
-    locationListQuery.date = getISODate(new Date())
-  }
-
-  console.log("Querying with ", locationListQuery)
-  return rttClient.getLocationList(locationListQuery).then((locationList) => {
-    if (!locationList.data.services)
-    {
-      console.error("Didn't see the list of servicers in RealTimeTrain API response", locationList.data)
-      return res.status(500).send("Incomplete response")
-    }
-    console.log("Got schedules response", locationList.data)
-    var services = locationList.data.services
-    var servicesList = []
-    services.forEach((service) => {
-      var origins = service.locationDetail.origin
-      var originTexts = []
-      origins.forEach((origin) => {
-        originTexts.push(origin.description)
-      })
-      var originText = originTexts.join(' / ')
-
-      var destinations = service.locationDetail.destination
-      var destinationTexts = []
-      destinations.forEach((destination) => {
-        destinationTexts.push(destination.description)
-      })
-      var destinationText = destinationTexts.join(' / ')
-
-      var serviceLine = {
-        'origin': originText,
-        'timetableTime': service.locationDetail.gbttBookedDeparture,
-        'timetableDate': service.runDate,
-        'destination': destinationText,
-        'trainUID': service.serviceUid,
-        'toc': service.atocName,
-        'tocCode': service.atocCode
+  return Promise.all([
+    validateCRS(startStation),
+    validateCRS(endStation),
+    validateTrainDate(journeyDate),
+    validateTrainTime(journeyTime)]).then(() => {
+      var locationListQuery = {
+        station: startStation,
+        toStation: endStation,
       }
-      if (service.isPassenger)
-      {
-        servicesList.push(serviceLine)
+      if (!(journeyTime === undefined || journeyTime === '')) {
+        // if a time is specified, then include it in the query
+          locationListQuery.time = journeyTime
       }
+      if (journeyDate === undefined || journeyDate === '') {
+        // if date is not specified, assume today
+        locationListQuery.date = getISODate(new Date())
+      }
+      return locationListQuery
+    }).then((locationListQuery) => {
+      return rttClient.getLocationList(locationListQuery)
+    }).then((locationList) => {
+        if (!locationList.data.services)
+        {
+          console.error('No services in rtt API response ', locationList.data)
+          throw new Error('No services running from that station')
+        }
+        var services = locationList.data.services
+        var servicesList = []
+        services.forEach((service) => {
+          if (service.isPassenger)
+          {
+            servicesList.push({
+              'origin': concatenateDescriptions(service.locationDetail.origin),
+              'destination': concatenateDescriptions(service.locationDetail.destination),
+              'timetableTime': service.locationDetail.gbttBookedDeparture,
+              'timetableDate': service.runDate,
+              'trainUID': service.serviceUid,
+              'toc': service.atocName,
+              'tocCode': service.atocCode
+            })
+          }
+        })
+        console.log(servicesList)
+        return res.status(200).send(servicesList)
     })
-    console.log(servicesList)
-    return res.status(200).send(servicesList)
-  }).catch((error) => {
-    console.error(error)
-    return res.status(500).send("Error querying schedules! ", error)
-  })
+    .catch((error) => {
+        console.error(error)
+        return res.status(500).send({'error': error.message})
+      })
 })
 
 exports.triggerScheduleUpdates = functions.pubsub.topic('pollSchedules').onPublish((message) => {
@@ -239,10 +267,7 @@ exports.triggerScheduleUpdates = functions.pubsub.topic('pollSchedules').onPubli
     snapshot.forEach((subscriptionRef) => {
       var subscription = subscriptionRef.data()
       console.log('trainUID', subscription.trainUID)
-      pubSubResponses.push( pubsubClient.topic('scheduleUpdate')
-        .publisher()
-        .publish(Buffer.from(JSON.stringify({'trainUID': subscription.trainUID, 'trainDate': subscription.trainDate })))
-      )
+      pubSubResponses.push( requestScheduleUpdate({'trainUID': subscription.trainUID, 'trainDate': subscription.trainDate }) )
     })
     return pubSubResponses
   }).then((messagePromises) => {
@@ -273,7 +298,7 @@ exports.scheduleUpdate = functions.pubsub.topic('scheduleUpdate').onPublish((mes
   })
   .then(serviceResp => {
     var service = serviceResp.data
-    console.log('rtt response',service)
+    //console.log('rtt response',service)
     if (service.error)
     {
       // schedule request returned an error
@@ -290,6 +315,14 @@ exports.scheduleUpdate = functions.pubsub.topic('scheduleUpdate').onPublish((mes
   .then(() => {
     return console.log(`Updated ${trainUID} for ${trainDate}`)
   }).catch(err => {
+    // count an error updating the schedule in the subscription
+    var subscriptionRef = db.collection('subscriptions').doc(SERVICE_SELECTOR)
+    var incrementErrorTransaction = db.runTransaction(t => {
+      return t.get(subscriptionRef).then(doc => {
+        var newErrorCount = doc.data().errorCount + 1
+        return t.update(subscriptionRef, { errorCount: newErrorCount })
+      })
+    })
     return console.error(err)
   })
 })
