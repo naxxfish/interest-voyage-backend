@@ -225,6 +225,8 @@ exports.schedules = functions.https.onRequest((req, res) => {
       if (journeyDate === undefined || journeyDate === '') {
         // if date is not specified, assume today
         locationListQuery.date = getISODate(new Date())
+      } else {
+        locationListQuery.date = journeyDate
       }
       return locationListQuery
     }).then((locationListQuery) => {
@@ -251,7 +253,6 @@ exports.schedules = functions.https.onRequest((req, res) => {
             })
           }
         })
-        console.log(servicesList)
         return res.status(200).send(servicesList)
     })
     .catch((error) => {
