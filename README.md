@@ -4,7 +4,7 @@ I'll describe what this is in more detail when it's more ready ;)
 
 ## Prerequisites
 
-You'll need to have the Google Cloud SDK and Firebase CLI installed, and have a project set up to deploy trainDateObject
+You'll need to have the Google Cloud SDK and Firebase CLI installed, and have a project set up to deploy to
 
 ## Deploying
 
