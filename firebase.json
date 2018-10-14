@@ -14,6 +14,10 @@
       {
         "source": "schedules",
         "function": "schedules"
+      },
+      {
+        "source":"journeyPlaylist",
+        "function":"journeyPlaylist"
       }
     ]
   },
