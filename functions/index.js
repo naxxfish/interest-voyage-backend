@@ -27,6 +27,42 @@ function getISODate(date) {
           date.getDate()].join('/')
 }
 
+function getServiceSelector(trainUID, trainDate) {
+  return trainUID + '_' + moment(trainDate,'YYYY/MM/DD').format('YYYY-DD-MM')
+}
+
+function getDateFromTrainDate(trainDate) {
+  return moment(trainDate,'YYYY/MM/DD').format('YYYY-DD-MM').toDate()
+}
+
+function getFBTimestampFromTrainDate(dateObj) {
+  return admin.firestore.Timestamp.fromDate(getDateFromTrainDate(dateObj))
+}
+
+function validateTrainDate(trainDate) {
+  return new Promise((resolve, reject) => {
+    if (trainDate === undefined || trainDate === '') {
+      reject(new Error('no train ID specified'))
+    }
+    if (! trainDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
+      reject(new Error('Invalid train date'))
+    }
+    resolve()
+  })
+}
+
+function validateTrainUID(trainUID) {
+  return new Promise((resolve, reject) => {
+    if (trainUID === undefined || trainUID === '') {
+      reject(new Error('no train ID specified'))
+    }
+    if (! trainUID.match(/^[A-Z]\d{5}$/)) {
+      reject(new Error('Invalid train ID'))
+    }
+    resolve()
+  })
+}
+
 exports.stations = functions.https.onRequest((req, res) => {
   if (req.method !== 'GET') {
     return res.status(403).send('Can\'t' + req.method + ' this function')
@@ -39,30 +75,24 @@ exports.subscribe = functions.https.onRequest((req, res) => {
      return res.status(403).send('Cannot ' + req.method + ' this function')
    }
    var trainUID = req.query['trainUID']
-   if (trainUID === undefined || trainUID === '') {
-     return res.status(500).send('no train ID specified')
-   }
-   if (! trainUID.match(/^[A-Z]\d{5}$/)) {
-     return res.status(500).send('Invalid train ID')
-   }
    var trainDate = req.query['trainDate']
-   if (trainDate === undefined || trainDate === '') {
-     return res.status(500).send('no train ID specified')
-   }
-   if (! trainDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
-     return res.status(500).send('Invalid train date')
-   }
-   // turn the date into a moment object
-   var trainDateMomentObject = moment(trainDate, 'YYYY/MM/DD')
-   var trainFBDate = admin.firestore.Timestamp.fromDate(trainDateMomentObject.toDate())
-   console.log("Subscribing to train ", trainUID)
-   return db.collection('subscriptions').doc(trainUID + '_' + trainDateMomentObject.format('YYYY-DD-MM')).set(
-     {
-       trainUID,
-       trainDate,
-       trainFBDate
-     }
-   ).then(fbRes => {
+   return Promise.all([
+     validateTrainUID(trainUID),
+     validateTrainDate(trainDate)
+   ]).catch((error) => {
+        return res.status(500).send(error)
+   }).then(() => {
+     var trainFBDate = getFBTimestampFromTrainDate(trainDate)
+     console.log("Subscribing to train ", trainUID)
+     const SERVICE_SELECTOR = getServiceSelector(trainUID,trainDate)
+     return db.collection('subscriptions').doc().set(
+       {
+         trainUID,
+         trainDate,
+         trainFBDate
+       }
+     )
+   }).then(fbRes => {
      console.log("Added subscription to " + trainUID)
      return res.status(200).send('Subscribed to ' + trainUID)
    }).catch((error) => {
@@ -73,20 +103,13 @@ exports.subscribe = functions.https.onRequest((req, res) => {
 exports.journeyPlaylist = functions.https.onRequest((req, res) => {
   // we expect a service UID and a date
   var trainUID = req.query['trainUID']
-  if (trainUID === undefined || trainUID === '') {
-    return res.status(500).send('no train ID specified')
-  }
-  if (! trainUID.match(/^[A-Z]\d{5}$/)) {
-    return res.status(500).send('Invalid train ID')
-  }
-
   var trainDate = req.query['trainDate']
-  if (trainDate === undefined || trainDate === '') {
-    return res.status(500).send('no date specified')
-  }
-  if (! trainDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
-    return res.status(500).send('Invalid train date')
-  }
+  Promise.all([
+    validateTrainUID(trainUID),
+    validateTrainDate(trainDate)
+    ]).catch((error) => {
+       return res.status(500).send(error)
+   })
   return rttClient.getService({
     'service': trainUID,
     'date': trainDate
@@ -98,24 +121,26 @@ exports.journeyPlaylist = functions.https.onRequest((req, res) => {
     }
     var assetPromises = []
     service.data.locations.map((location) => {
-      assetPromises.push( db.collection('assets').where('tiploc','==',location.tiploc).get() )
-      return
+      return assetPromises.push( db.collection('assets').where('tiploc','==',location.tiploc).get() )
     })
-    return Promise.all(assetPromises).then((snapshots) => {
-      var list = []
-      snapshots.forEach((snapshot) => {
-        snapshot.forEach((doc) => {
-          if (!doc.exists)
-          {
-            return
-          } else {
-            list.push(doc.data())
-          }
-        })
+    return assetPromises
+  })
+  .then( Promise.all(assetPromises) )
+  .then((snapshots) => {
+    var list = []
+    snapshots.forEach((snapshot) => {
+      snapshot.forEach((doc) => {
+        if (!doc.exists)
+        {
+          return
+        } else {
+          list.push(doc.data())
+        }
       })
-      return res.status(200).send(list)
     })
-  }).catch((error) => {
+    return res.status(200).send(list)
+  })
+  .catch((error) => {
     return res.status(500).send('Could not retrieve service: ' + error)
   })
 })
@@ -156,11 +181,12 @@ exports.schedules = functions.https.onRequest((req, res) => {
       return res.status(500).send('invalid date format')
     }
   } else {
+    // if all else fails, assume we're talking about today
     locationListQuery.date = getISODate(new Date())
   }
 
   console.log("Querying with ", locationListQuery)
-  rttClient.getLocationList(locationListQuery).then((locationList) => {
+  return rttClient.getLocationList(locationListQuery).then((locationList) => {
     if (!locationList.data.services)
     {
       console.error("Didn't see the list of servicers in RealTimeTrain API response", locationList.data)
@@ -209,23 +235,23 @@ exports.schedules = functions.https.onRequest((req, res) => {
 exports.triggerScheduleUpdates = functions.pubsub.topic('pollSchedules').onPublish((message) => {
   // this message content is irrelevant - a message is generated every minute to trigger this function
   return db.collection('subscriptions').get().then((snapshot) => {
-    return snapshot.forEach((subscriptionRef) => {
+    var pubSubResponses = []
+    snapshot.forEach((subscriptionRef) => {
       var subscription = subscriptionRef.data()
       console.log('trainUID', subscription.trainUID)
-      pubsubClient
-      .topic('scheduleUpdate')
-      .publisher()
-      .publish(Buffer.from(JSON.stringify({'trainUID': subscription.trainUID, 'trainDate': subscription.trainDate })))
-      .then(messageId => {
-        console.log(`Queued ${subscription.trainUID} to be polled (${messageId} published)`)
-        return null
-      })
-      .catch(err => {
-        console.error('ERROR:', err)
-        return null
-      })
+      pubSubResponses.push( pubsubClient.topic('scheduleUpdate')
+        .publisher()
+        .publish(Buffer.from(JSON.stringify({'trainUID': subscription.trainUID, 'trainDate': subscription.trainDate })))
+      )
     })
-  }).catch(err => {
+    return pubSubResponses
+  }).then((messagePromises) => {
+    return Promise.all(messagePromises)
+  })
+  .then(messageIds => {
+      return console.log(`Queued ${messageIds.length} schedules to update`)
+  })
+  .catch(err => {
       console.log('Error getting Subscriptions document', err)
       return null
   })
@@ -237,23 +263,34 @@ exports.scheduleUpdate = functions.pubsub.topic('scheduleUpdate').onPublish((mes
     trainUID = message.json.trainUID
     trainDate = message.json.trainDate
   } catch (e) {
-    console.error('PubSub message was not JSON', e);
+    throw new Error(`schedule update trigger message couldn't be parsed ${e}`)
   }
-  const SERVICE_SELECTOR = trainUID
-  console.log('trainUID:', trainUID, 'trainDate', trainDate)
-  return db.collection('schedules').doc(SERVICE_SELECTOR).get().then((doc) => {
-    return rttClient.getService({
-      'service':trainUID,
-      'date':trainDate
-    }).then(serviceResp => {
-      var service = serviceResp.data
-      // add runDate as Firestore timestamp
-      service.runDateTS = admin.firestore.Timestamp.fromDate(moment(service.runDate, 'YYYY-MM-DD').toDate())
-      return db.collection('schedules').doc(SERVICE_SELECTOR).set(service)
-    })
+  const SERVICE_SELECTOR = getServiceSelector(trainUID,trainDate)
+  console.log(`Updating schedule for trainUID: ${trainUID}, trainDate: ${trainDate} doc.id ${SERVICE_SELECTOR}`)
+  return rttClient.getService({
+    'service':trainUID,
+    'date':trainDate
+  })
+  .then(serviceResp => {
+    var service = serviceResp.data
+    console.log('rtt response',service)
+    if (service.error)
+    {
+      // schedule request returned an error
+      // TODO: we should count how many times the errors have occurred and do something about that (perhaps remove the subscription)
+      throw new Error(`rtt.api error ${trainUID} for ${trainDate}: ${service.error}`)
+    }
+    // add runDate as Firestore timestamp so we can clean it up later
+    service.runDateTS = admin.firestore.Timestamp.fromDate(moment(service.runDate, 'YYYY-MM-DD').toDate())
+    return service
+  })
+  .then((service) => {
+    return db.collection('schedules').doc(SERVICE_SELECTOR).set(service)
+  })
+  .then(() => {
+    return console.log(`Updated ${trainUID} for ${trainDate}`)
   }).catch(err => {
-      console.log('Error getting Schedule document', err)
-      return
+    return console.error(err)
   })
 })
 
