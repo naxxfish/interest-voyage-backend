@@ -22,7 +22,7 @@ You'll need to set some configuration variables so that we can talk to the [real
 
     firebase functions:config:set rtt.uri="https://api.for.realtimetrains/v1" rtt.username="YOUR_RTT_API_USERNAME" rtt.password="YOUR_RTT_API_PASSWORD"
 
-And, if you want to run the functions locally:
+And, if you want to run the functions locally, do this after setting those variables:
 
     firebase functions:config:get > functions/.runtimeconfig.json
 
@@ -51,6 +51,7 @@ And to make the AppEngine cron component deploy:
     gcloud app deploy app.yaml cron.yaml
 
 ## TODO
+
  * Should really set up some [unit tests](https://firebase.google.com/docs/functions/unit-testing)
  * Reformat the schedule documents so that they only contain useful information
  * ... plus, like, a million other things
