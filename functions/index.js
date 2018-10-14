@@ -360,7 +360,7 @@ exports.hourlyCleanup = functions.pubsub.topic('hourlyCleanup').onPublish((messa
 
 exports.dailyCleanup = functions.pubsub.topic('dailyCleanup').onPublish((message) => {
   // cleanup subscriptions
-  var cleanupBeforeThisDate = admin.firestore.Timestamp.fromDate(moment().subtract(2,'days').toDate())
+  var cleanupBeforeThisDate = admin.firestore.Timestamp.fromDate(moment().subtract(1,'days').toDate())
   var subscriptionCleanupPromise = db.collection('subscriptions')
     .where('trainFBDate','<',cleanupBeforeThisDate)
     .get()
