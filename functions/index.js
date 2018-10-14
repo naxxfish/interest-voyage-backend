@@ -329,6 +329,25 @@ exports.scheduleUpdate = functions.pubsub.topic('scheduleUpdate').onPublish((mes
 
 exports.hourlyCleanup = functions.pubsub.topic('hourlyCleanup').onPublish((message) => {
   // TODO: loop through subscriptions and delete ones with a high number of errors
+  const MAX_ERROR_COUNT = 20
+  return db.collection('subscriptions').where('errorCount', '>', MAX_ERROR_COUNT)
+    .get()
+    .then((snapshot) => {
+      if (snapshot.size === 0) {
+        console.log("No subscriptions to remove")
+        return 0;
+      }
+      var batch = db.batch()
+      snapshot.docs.forEach((doc) => {
+        console.log(`Deleting subscription ${doc.id} with ${doc.data().errorCount} errors`)
+        return batch.delete(doc.ref)
+      })
+      return batch.commit()
+    }).then((numDeleted) => {
+      return console.log(`Removed ${numDeleted} subscriptions with >${MAX_ERROR_COUNT} errors`)
+    }).catch((error) => {
+      return console.error(`Error performing hourly cleanup: ${error.message}`)
+    })
 })
 
 exports.dailyCleanup = functions.pubsub.topic('dailyCleanup').onPublish((message) => {
