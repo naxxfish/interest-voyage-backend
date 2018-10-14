@@ -12,6 +12,10 @@
         "function": "subscribe"
       },
       {
+        "source": "stations",
+        "function": "stations"
+      },
+      {
         "source": "schedules",
         "function": "schedules"
       },
