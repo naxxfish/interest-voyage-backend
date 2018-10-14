@@ -3,5 +3,8 @@ cron:
   url: /publish/pollSchedules
   schedule: every 1 minutes
 - description: Trigger a cleanup job once a day
-  url: /publish/cleanup
+  url: /publish/dailyCleanup
   schedule: every 24 hours
+- description: Trigger a cleanup hourly
+  url: /publish/hourlyCleanup
+  schedule: every 1 hours

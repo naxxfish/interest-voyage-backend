@@ -327,7 +327,11 @@ exports.scheduleUpdate = functions.pubsub.topic('scheduleUpdate').onPublish((mes
   })
 })
 
-exports.cleanup = functions.pubsub.topic('cleanup').onPublish((message) => {
+exports.hourlyCleanup = functions.pubsub.topic('hourlyCleanup').onPublish((message) => {
+  // TODO: loop through subscriptions and delete ones with a high number of errors
+})
+
+exports.dailyCleanup = functions.pubsub.topic('dailyCleanup').onPublish((message) => {
   // cleanup subscriptions
   var cleanupBeforeThisDate = admin.firestore.Timestamp.fromDate(moment().subtract(2,'days').toDate())
   var subscriptionCleanupPromise = db.collection('subscriptions')
