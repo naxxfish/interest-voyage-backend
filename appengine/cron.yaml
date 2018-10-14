@@ -1,4 +1,7 @@
 cron:
-- description: Push a "tick" onto pubsub every hour
+- description: Trigger a schedule update every minute
   url: /publish/pollSchedules
   schedule: every 1 minutes
+- description: Trigger a cleanup job once a day
+  url: /publish/cleanup
+  schedule: every 24 hours
