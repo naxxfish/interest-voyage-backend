@@ -183,9 +183,8 @@ exports.journeyPlaylist = functions.https.onRequest((req, res) => {
     service.data.locations.map((location) => {
       return assetPromises.push( db.collection('assets').where('tiploc','==',location.tiploc).get() )
     })
-    return assetPromises
+    return Promise.all(assetPromises)
   })
-  .then( (assetPromises) => { return Promise.all(assetPromises) } )
   .then((snapshots) => {
     var list = []
     snapshots.forEach((snapshot) => {
@@ -277,9 +276,7 @@ exports.triggerScheduleUpdates = functions.pubsub.topic('pollSchedules').onPubli
       console.log('trainUID', subscription.trainUID)
       pubSubResponses.push( requestScheduleUpdate({'trainUID': subscription.trainUID, 'trainDate': subscription.trainDate }) )
     })
-    return pubSubResponses
-  }).then((messagePromises) => {
-    return Promise.all(messagePromises)
+    return Promise.all(pubSubResponses)
   })
   .then(messageIds => {
       return console.log(`Queued ${messageIds.length} schedules to update`)
